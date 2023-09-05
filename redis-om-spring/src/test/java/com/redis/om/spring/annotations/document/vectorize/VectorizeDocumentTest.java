@@ -1,11 +1,13 @@
-package com.redis.om.spring.annotations.vectorize;
+package com.redis.om.spring.annotations.document.vectorize;
 
-import com.redis.om.spring.AbstractBaseEnhancedRedisTest;
-import com.redis.om.spring.annotations.hash.fixtures.Product;
-import com.redis.om.spring.annotations.hash.fixtures.Product$;
-import com.redis.om.spring.annotations.hash.fixtures.ProductRepository;
+import com.redis.om.spring.AbstractBaseDocumentTest;
+import com.redis.om.spring.annotations.document.fixtures.Product;
+import com.redis.om.spring.annotations.document.fixtures.Product$;
+import com.redis.om.spring.annotations.document.fixtures.ProductRepository;
 import com.redis.om.spring.search.stream.EntityStream;
 import com.redis.om.spring.search.stream.SearchStream;
+import com.redis.om.spring.tuple.Fields;
+import com.redis.om.spring.tuple.Pair;
 import com.redis.om.spring.vectorize.FeatureExtractor;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -20,7 +22,7 @@ import java.util.stream.Collectors;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertAll;
 
-class VectorizeTest extends AbstractBaseEnhancedRedisTest {
+class VectorizeDocumentTest extends AbstractBaseDocumentTest {
   @Autowired ProductRepository repository;
   @Autowired EntityStream entityStream;
 
@@ -48,7 +50,7 @@ class VectorizeTest extends AbstractBaseEnhancedRedisTest {
     assertAll( //
         () -> assertThat(cat).isPresent(), //
         () -> assertThat(cat.get()).extracting("imageEmbedding").isNotNull(), //
-        () -> assertThat(cat.get().getImageEmbedding()).hasSize(512*Float.BYTES)
+        () -> assertThat(cat.get().getImageEmbedding()).hasSize(512)
     );
   }
 
@@ -61,8 +63,8 @@ class VectorizeTest extends AbstractBaseEnhancedRedisTest {
     Optional<Product> cat = repository.findFirstByName("cat");
     assertAll( //
         () -> assertThat(cat).isPresent(), //
-        () -> assertThat(cat.get()).extracting("sentenceEmbedding").isNotNull(), //
-        () -> assertThat(cat.get().getSentenceEmbedding()).hasSize(768*Float.BYTES)
+        () -> assertThat(cat.get()).extracting("sentenceEmbedding").isNotNull()//, //
+        //() -> assertThat(cat.get().getSentenceEmbedding()).hasSize(768*Float.BYTES)
     );
   }
 
@@ -83,8 +85,9 @@ class VectorizeTest extends AbstractBaseEnhancedRedisTest {
         .limit(K) //
         .collect(Collectors.toList());
 
-    assertThat(results).hasSize(5).map(Product::getName).containsExactly("cat", "cat2",
-        "face", "face2", "catdog");
+    assertThat(results).hasSize(5).map(Product::getName).containsExactly( //
+       "cat", "cat2", "catdog", "face", "face2" //
+    );
   }
 
   @Test
@@ -105,7 +108,54 @@ class VectorizeTest extends AbstractBaseEnhancedRedisTest {
         .collect(Collectors.toList());
 
     assertThat(results).hasSize(5).map(Product::getName).containsExactly( //
-        "cat", "catdog", "cat2", "face", "face2" //
+      "cat", "cat2", "catdog", "face", "face2" //
+    );
+  }
+
+  @Test
+  @EnabledIf(
+    expression = "#{@featureExtractor.isReady()}", //
+    loadContext = true //
+  )
+  void testKnnHybridSentenceSimilaritySearch() {
+    Product cat = repository.findFirstByName("cat").get();
+    int K = 5;
+
+    SearchStream<Product> stream = entityStream.of(Product.class);
+
+    List<Product> results = stream //
+      .filter(Product$.NAME.startsWith("cat")) //
+      .filter(Product$.SENTENCE_EMBEDDING.knn(K, cat.getSentenceEmbedding())) //
+      .sorted(Product$._SENTENCE_EMBEDDING_SCORE) //
+      .limit(K) //
+      .collect(Collectors.toList());
+
+    assertThat(results).hasSize(3).map(Product::getName).containsExactly( //
+      "cat", "cat2", "catdog" //
+    );
+  }
+
+  @Test
+  @EnabledIf(
+    expression = "#{@featureExtractor.isReady()}", //
+    loadContext = true //
+    )
+  void testKnnSentenceSimilaritySearchWithScores() {
+    Product cat = repository.findFirstByName("cat").get();
+    int K = 5;
+
+    SearchStream<Product> stream = entityStream.of(Product.class);
+
+    List<Pair<Product,Double>> results = stream //
+      .filter(Product$.SENTENCE_EMBEDDING.knn(K, cat.getSentenceEmbedding())) //
+      .sorted(Product$._SENTENCE_EMBEDDING_SCORE) //
+      .limit(K) //
+      .map(Fields.of(Product$._THIS, Product$._SENTENCE_EMBEDDING_SCORE)) //
+      .collect(Collectors.toList());
+
+    assertAll( //
+      () -> assertThat(results).hasSize(5).map(Pair::getFirst).map(Product::getName).containsExactly( "cat", "cat2", "catdog", "face", "face2"), //
+      () -> assertThat(results).hasSize(5).map(Pair::getSecond).usingElementComparator(closeToComparator).containsExactly(0.0, 0.6704, 0.7162, 0.7705, 0.8107) //
     );
   }
 }

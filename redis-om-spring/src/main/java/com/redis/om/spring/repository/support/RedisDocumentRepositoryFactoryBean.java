@@ -1,8 +1,10 @@
 package com.redis.om.spring.repository.support;
 
-import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import com.redis.om.spring.RediSearchIndexer;
+import com.redis.om.spring.RedisOMProperties;
 import com.redis.om.spring.ops.RedisModulesOperations;
+import com.redis.om.spring.vectorize.FeatureExtractor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.keyvalue.core.KeyValueOperations;
 import org.springframework.data.keyvalue.repository.support.KeyValueRepositoryFactoryBean;
@@ -23,7 +25,11 @@ public class RedisDocumentRepositoryFactoryBean<T extends Repository<S, ID>, S, 
   @Autowired
   private @Nullable RedisMappingContext mappingContext;
   @Autowired
-  private Gson gson;
+  private GsonBuilder gsonBuilder;
+  @Autowired
+  private @Nullable FeatureExtractor featureExtractor;
+  @Autowired
+  private RedisOMProperties properties;
 
   /**
    * Creates a new {@link RedisDocumentRepositoryFactoryBean} for the given
@@ -43,7 +49,7 @@ public class RedisDocumentRepositoryFactoryBean<T extends Repository<S, ID>, S, 
       Class<? extends RepositoryQuery> repositoryQueryType //
   ) {
     return new RedisDocumentRepositoryFactory(operations, rmo, indexer, queryCreator, repositoryQueryType,
-        this.mappingContext, this.gson);
+        this.mappingContext, this.gsonBuilder, this.featureExtractor, this.properties);
   }
 
   @Override

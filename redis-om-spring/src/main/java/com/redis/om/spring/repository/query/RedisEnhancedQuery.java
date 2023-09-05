@@ -1,11 +1,13 @@
 package com.redis.om.spring.repository.query;
 
+import com.redis.om.spring.RedisOMProperties;
 import com.redis.om.spring.annotations.*;
 import com.redis.om.spring.convert.MappingRedisOMConverter;
 import com.redis.om.spring.ops.RedisModulesOperations;
 import com.redis.om.spring.ops.search.SearchOperations;
 import com.redis.om.spring.repository.query.autocomplete.AutoCompleteQueryExecutor;
 import com.redis.om.spring.repository.query.bloom.BloomQueryExecutor;
+import com.redis.om.spring.repository.query.cuckoo.CuckooQueryExecutor;
 import com.redis.om.spring.repository.query.clause.QueryClause;
 import com.redis.om.spring.util.ObjectUtils;
 import org.apache.commons.logging.Log;
@@ -50,6 +52,7 @@ public class RedisEnhancedQuery implements RepositoryQuery {
 
   private final QueryMethod queryMethod;
   private final String searchIndex;
+  private final RedisOMProperties redisOMProperties;
 
   private RediSearchQueryType type;
   private String value;
@@ -60,7 +63,7 @@ public class RedisEnhancedQuery implements RepositoryQuery {
   private Integer limit;
   private String sortBy;
   private Boolean sortAscending;
-  private boolean hasLanguageParameter;
+  private final boolean hasLanguageParameter;
 
   // aggregation fields
   private final List<Entry<String, String>> aggregationLoad = new ArrayList<>();
@@ -83,28 +86,33 @@ public class RedisEnhancedQuery implements RepositoryQuery {
   private final MappingRedisOMConverter mappingConverter;
 
   private final BloomQueryExecutor bloomQueryExecutor;
+  private final CuckooQueryExecutor cuckooQueryExecutor;
   private final AutoCompleteQueryExecutor autoCompleteQueryExecutor;
 
   private boolean isANDQuery = false;
 
   @SuppressWarnings("unchecked")
-  public RedisEnhancedQuery(QueryMethod queryMethod, //
+  public RedisEnhancedQuery(
+      QueryMethod queryMethod, //
       RepositoryMetadata metadata, //
       QueryMethodEvaluationContextProvider evaluationContextProvider, //
       KeyValueOperations keyValueOperations, //
       RedisOperations<?, ?> redisOperations, //
       RedisModulesOperations<?> rmo, //
-      Class<? extends AbstractQueryCreator<?, ?>> queryCreator) {
+      Class<? extends AbstractQueryCreator<?, ?>> queryCreator,
+      RedisOMProperties redisOMProperties) {
     logger.info(String.format("Creating query %s", queryMethod.getName()));
 
     this.modulesOperations = (RedisModulesOperations<String>) rmo;
     this.queryMethod = queryMethod;
     this.searchIndex = this.queryMethod.getEntityInformation().getJavaType().getName() + "Idx";
     this.domainType = this.queryMethod.getEntityInformation().getJavaType();
+    this.redisOMProperties = redisOMProperties;
 
     this.mappingConverter = new MappingRedisOMConverter(null, new ReferenceResolverImpl(redisOperations));
 
     bloomQueryExecutor = new BloomQueryExecutor(this, modulesOperations);
+    cuckooQueryExecutor = new CuckooQueryExecutor(this, modulesOperations);
     autoCompleteQueryExecutor = new AutoCompleteQueryExecutor(this, modulesOperations);
 
     Class<?> repoClass = metadata.getRepositoryInterface();
@@ -160,7 +168,7 @@ public class RedisEnhancedQuery implements RepositoryQuery {
               case TOLIST -> r = Reducers.to_list(arg0);
               case FIRST_VALUE -> {
                 if (reducer.args().length > 1) {
-                  String arg1 = reducer.args().length > 1 ? reducer.args()[1] : null;
+                  String arg1 = reducer.args()[1];
                   String arg2 = reducer.args().length > 2 ? reducer.args()[2] : null;
                   SortOrder order = arg2 != null && arg2.equalsIgnoreCase("ASC") ? SortOrder.ASC : SortOrder.DESC;
                   SortedField sortedField = new SortedField(arg1, order);
@@ -295,7 +303,7 @@ public class RedisEnhancedQuery implements RepositoryQuery {
       // Set / List
       //
       else if (Set.class.isAssignableFrom(fieldType) || List.class.isAssignableFrom(fieldType)) {
-        Optional<Class<?>> maybeCollectionType = ObjectUtils.getCollectionElementType(field);
+        Optional<Class<?>> maybeCollectionType = ObjectUtils.getCollectionElementClass(field);
         if (maybeCollectionType.isPresent()) {
           Class<?> collectionType = maybeCollectionType.get();
           if (Number.class.isAssignableFrom(collectionType)) {
@@ -339,9 +347,12 @@ public class RedisEnhancedQuery implements RepositoryQuery {
   @Override
   public Object execute(Object[] parameters) {
     Optional<String> maybeBloomFilter = bloomQueryExecutor.getBloomFilter();
+    Optional<String> maybeCuckooFilter = cuckooQueryExecutor.getCuckooFilter();
 
     if (maybeBloomFilter.isPresent()) {
       return bloomQueryExecutor.executeBloomQuery(parameters, maybeBloomFilter.get());
+    } else if (maybeCuckooFilter.isPresent()) {
+      return cuckooQueryExecutor.executeCuckooQuery(parameters, maybeCuckooFilter.get());
     } else if (type == RediSearchQueryType.QUERY) {
       return executeQuery(parameters);
     } else if (type == RediSearchQueryType.AGGREGATION) {
@@ -370,6 +381,7 @@ public class RedisEnhancedQuery implements RepositoryQuery {
 
     Optional<Pageable> maybePageable = Optional.empty();
 
+    boolean needsLimit = true;
     if (queryMethod.isPageQuery()) {
       maybePageable = Arrays.stream(parameters).filter(Pageable.class::isInstance).map(Pageable.class::cast)
           .findFirst();
@@ -378,6 +390,7 @@ public class RedisEnhancedQuery implements RepositoryQuery {
         Pageable pageable = maybePageable.get();
         if (!pageable.isUnpaged()) {
           query.limit(Math.toIntExact(pageable.getOffset()), pageable.getPageSize());
+          needsLimit = false;
 
           if (pageable.getSort() != null) {
             for (Order order : pageable.getSort()) {
@@ -388,8 +401,13 @@ public class RedisEnhancedQuery implements RepositoryQuery {
       }
     }
 
-    if ((limit != null && limit != Integer.MIN_VALUE) || (offset != null && offset != Integer.MIN_VALUE)) {
-      query.limit(offset != null ? offset : 10, limit != null ? limit : 0);
+    if (needsLimit) {
+      if ((limit != null && limit != Integer.MIN_VALUE) || (offset != null && offset != Integer.MIN_VALUE)) {
+        query.limit(offset != null ? offset : 0,
+            limit != null ? limit : redisOMProperties.getRepository().getQuery().getLimit());
+      } else {
+        query.limit(0, redisOMProperties.getRepository().getQuery().getLimit());
+      }
     }
 
     if ((sortBy != null && !sortBy.isBlank())) {
@@ -487,6 +505,7 @@ public class RedisEnhancedQuery implements RepositoryQuery {
     // sort by
     Optional<Pageable> maybePageable = Optional.empty();
 
+    boolean needsLimit = true;
     if (queryMethod.isPageQuery()) {
       maybePageable = Arrays.stream(parameters).filter(Pageable.class::isInstance).map(Pageable.class::cast)
           .findFirst();
@@ -495,6 +514,7 @@ public class RedisEnhancedQuery implements RepositoryQuery {
         Pageable pageable = maybePageable.get();
         if (!pageable.isUnpaged()) {
           aggregation.limit(Math.toIntExact(pageable.getOffset()), pageable.getPageSize());
+          needsLimit = false;
 
           // sort by
           if (pageable.getSort() != null) {
@@ -526,8 +546,12 @@ public class RedisEnhancedQuery implements RepositoryQuery {
     }
 
     // limit
-    if ((limit != null) || (offset != null)) {
-      aggregation.limit(offset != null ? offset : 0, limit != null ? limit : 0);
+    if (needsLimit) {
+      if ((limit != null) || (offset != null)) {
+        aggregation.limit(offset != null ? offset : 0, limit != null ? limit : 0);
+      } else {
+        aggregation.limit(0, redisOMProperties.getRepository().getQuery().getLimit());
+      }
     }
 
     // execute the aggregation
@@ -542,7 +566,7 @@ public class RedisEnhancedQuery implements RepositoryQuery {
       if (queryMethod.getReturnedObjectType() == Map.class) {
         content = aggregationResult.getResults().stream().map(m -> m.entrySet().stream() //
             .map(e -> new AbstractMap.SimpleEntry<>(e.getKey(),
-                e.getValue() != null ? new String((byte[]) e.getValue()) : "")) //
+                e.getValue() != null ? e.getValue().toString() : "")) //
             .collect(Collectors.toMap(SimpleEntry::getKey, SimpleEntry::getValue)) //
         ).collect(Collectors.toList());
       }

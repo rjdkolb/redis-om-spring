@@ -7,6 +7,7 @@ import org.springframework.data.annotation.Id;
 
 @Data
 @RequiredArgsConstructor(staticName = "of")
+@NoArgsConstructor
 @AllArgsConstructor(access = AccessLevel.PROTECTED)
 @Document
 public class DeepNest {

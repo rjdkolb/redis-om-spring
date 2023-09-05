@@ -5,12 +5,13 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.keyvalue.repository.KeyValueRepository;
 import org.springframework.data.repository.NoRepositoryBean;
+import org.springframework.data.repository.query.QueryByExampleExecutor;
 import redis.clients.jedis.json.Path;
 
 import java.io.IOException;
 
 @NoRepositoryBean
-public interface RedisDocumentRepository<T, ID> extends KeyValueRepository<T, ID> {
+public interface RedisDocumentRepository<T, ID> extends KeyValueRepository<T, ID>, QueryByExampleExecutor<T> {
 
   Iterable<ID> getIds();
 
@@ -32,4 +33,6 @@ public interface RedisDocumentRepository<T, ID> extends KeyValueRepository<T, ID
   Long getExpiration(ID id);
 
   Iterable<T> bulkLoad(String file) throws IOException;
+
+  <S extends T> S update(S entity);
 }

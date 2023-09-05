@@ -3,6 +3,7 @@ package com.redis.om.spring.ops.json;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.redis.om.spring.client.RedisModulesClient;
+import org.springframework.lang.Nullable;
 import redis.clients.jedis.json.JsonSetParams;
 import redis.clients.jedis.json.Path;
 import redis.clients.jedis.json.Path2;
@@ -13,12 +14,13 @@ import java.util.Objects;
 
 public class JSONOperationsImpl<K> implements JSONOperations<K> {
 
-  private final Gson gson;
-  final RedisModulesClient client;
+  private Gson gson;
+  private final GsonBuilder builder;
+  private final RedisModulesClient client;
 
-  public JSONOperationsImpl(RedisModulesClient client, GsonBuilder gson) {
+  public JSONOperationsImpl(RedisModulesClient client, GsonBuilder builder) {
     this.client = client;
-    this.gson = gson.create();
+    this.builder = builder;
   }
 
   @Override
@@ -26,38 +28,53 @@ public class JSONOperationsImpl<K> implements JSONOperations<K> {
     return client.clientForJSON().jsonDel(key.toString(), path);
   }
 
+  @Nullable
+  @Override
+  public String get(K key) {
+    return client.clientForJSON().jsonGetAsPlainString(key.toString(), Path.ROOT_PATH);
+  }
+
   @Override
   public <T> T get(K key, Class<T> clazz) {
-    return gson.fromJson(client.clientForJSON().jsonGetAsPlainString(key.toString(), Path.ROOT_PATH), clazz);
+    return getGson().fromJson(client.clientForJSON().jsonGetAsPlainString(key.toString(), Path.ROOT_PATH), clazz);
   }
 
   @Override
   public <T> T get(K key, Class<T> clazz, Path path) {
-    return gson.fromJson(client.clientForJSON().jsonGetAsPlainString(key.toString(), path), clazz);
+    return getGson().fromJson(client.clientForJSON().jsonGetAsPlainString(key.toString(), path), clazz);
   }
 
-  @SafeVarargs @Override
-  public final <T> List<T> mget(Class<T> clazz, K... keys) {
-    String[] keysAsStrings = Arrays.stream(keys).map(Object::toString).toArray(String[]::new);
-    return client.clientForJSON().jsonMGet(keysAsStrings)
+  @SafeVarargs
+  @Override
+  public final List<String> mget(K... keys) {
+    return (keys.length > 0) ? client.clientForJSON().jsonMGet(getKeysAsString(keys))
         .stream()
         .filter(Objects::nonNull)
         .map(jsonArr -> jsonArr.get(0))
         .map(Object::toString)
-        .map(str -> gson.fromJson(str, clazz))
-        .toList();
+        .toList() : List.of();
   }
 
+  @SafeVarargs @Override
+  public final <T> List<T> mget(Class<T> clazz, K... keys) {
+    Gson g = getGson();
+    return (keys.length > 0) ? client.clientForJSON().jsonMGet(getKeysAsString(keys))
+        .stream()
+        .filter(Objects::nonNull)
+        .map(jsonArr -> jsonArr.get(0))
+        .map(Object::toString)
+        .map(str -> g.fromJson(str, clazz))
+        .toList() : List.of();
+  }
 
   @SafeVarargs @Override
   public final <T> List<T> mget(Path2 path, Class<T> clazz, K... keys) {
-    String[] keysAsStrings = Arrays.stream(keys).map(Object::toString).toArray(String[]::new);
-
-    return client.clientForJSON().jsonMGet(path, keysAsStrings)
+    Gson g = getGson();
+    return (keys.length > 0) ? client.clientForJSON().jsonMGet(path, getKeysAsString(keys))
         .stream()
         .map(Object::toString)
-        .map(str -> gson.fromJson(str, clazz))
-        .toList();
+        .map(str -> g.fromJson(str, clazz))
+        .toList() : List.of();
   }
 
   @Override
@@ -67,12 +84,12 @@ public class JSONOperationsImpl<K> implements JSONOperations<K> {
 
   @Override
   public void set(K key, Object object) {
-    client.clientForJSON().jsonSetWithPlainString(key.toString(), Path.ROOT_PATH, gson.toJson(object));
+    client.clientForJSON().jsonSetWithPlainString(key.toString(), Path.ROOT_PATH, getGson().toJson(object));
   }
 
   @Override
   public void set(K key, Object object, Path path) {
-    client.clientForJSON().jsonSet(key.toString(), path, object);
+    client.clientForJSON().jsonSetWithPlainString(key.toString(), path, getGson().toJson(object));
   }
 
   @Override
@@ -150,4 +167,15 @@ public class JSONOperationsImpl<K> implements JSONOperations<K> {
     return client.clientForJSON().jsonNumIncrBy(key.toString(), path, value);
   }
 
+  @SafeVarargs
+  private String[] getKeysAsString(K... keys) {
+    return Arrays.stream(keys).map(Object::toString).toArray(String[]::new);
+  }
+
+  private Gson getGson() {
+    if (gson == null) {
+      gson = builder.create();
+    }
+    return gson;
+  }
 }

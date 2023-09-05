@@ -12,6 +12,7 @@ import org.springframework.data.redis.connection.RedisGeoCommands;
 import redis.clients.jedis.json.Path;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -35,10 +36,23 @@ class BasicRedisDocumentMappingTest extends AbstractBaseDocumentTest {
   @Autowired
   DocWithEnumRepository docWithEnumRepository;
 
+  @Autowired
+  SomeDocumentRepository someDocumentRepository;
+
+  @Autowired
+  DeepNestRepository deepNestRepository;
+
   @BeforeEach
   void cleanUp() {
     flushSearchIndexFor(Company.class);
     flushSearchIndexFor(DocWithSets.class);
+
+    if (deepNestRepository.count() == 0) {
+      DeepNest dn1 = DeepNest.of("dn-1", NestLevel1.of("nl-1-1", "Louis, I think this is the beginning of a beautiful friendship.", NestLevel2.of("nl-2-1", "Here's looking at you, kid.")));
+      DeepNest dn2 = DeepNest.of("dn-2", NestLevel1.of("nl-1-2", "Whoever you are, I have always depended on the kindness of strangers.", NestLevel2.of("nl-2-2", "Hey, you hens! Cut out the cackling in there!")));
+      DeepNest dn3 = DeepNest.of("dn-3", NestLevel1.of("nl-1-3", "A good body with a dull brain is as cheap as life itself.", NestLevel2.of("nl-2-3", "I'm Spartacus!")));
+      deepNestRepository.saveAll(List.of(dn1, dn2, dn3));
+    }
   }
 
   @Test
@@ -115,6 +129,18 @@ class BasicRedisDocumentMappingTest extends AbstractBaseDocumentTest {
     Optional<Company> maybeRedis = repository.findById(redisInc.getId());
 
     assertThat(maybeRedis).isPresent().map(Company::getName).contains("Redis");
+  }
+
+  @Test
+  void testUpdateLocalDateTimeField() {
+    var now = LocalDateTime.now();
+    SomeDocument docWithDateTime = new SomeDocument();
+    docWithDateTime.setDocumentCreationDate(now);
+    docWithDateTime = someDocumentRepository.save(docWithDateTime);
+
+    someDocumentRepository.updateField(docWithDateTime, SomeDocument$.DOCUMENT_CREATION_DATE, now.minusDays(5));
+
+    assertThat(someDocumentRepository.findById(docWithDateTime.getId()).get().getDocumentCreationDate()).isEqualToIgnoringNanos(now.minusDays(5));
   }
 
   @Test
@@ -254,7 +280,7 @@ class BasicRedisDocumentMappingTest extends AbstractBaseDocumentTest {
   }
 
   @Test
-  void testMaxQueryReturnDefaultsTo10() {
+  void testMaxQueryReturnDefaultsToPropMaxSearchResults() {
     final List<Company> bunchOfCompanies = new ArrayList<>();
     IntStream.range(1, 100).forEach(i -> {
       Company c = Company.of("Company" + i, 2022, LocalDate.of(2021, 5, 1), new Point(-122.066540, 37.377690),
@@ -269,7 +295,7 @@ class BasicRedisDocumentMappingTest extends AbstractBaseDocumentTest {
 
     // noinspection ResultOfMethodCallIgnored
     assertAll( //
-        () -> assertThat(publiclyListed).hasSize(10), //
+        () -> assertThat(publiclyListed).hasSize(49), //
         () -> assertThat(publiclyListed).allSatisfy(Company::isPubliclyListed) //
     );
   }
@@ -591,9 +617,9 @@ class BasicRedisDocumentMappingTest extends AbstractBaseDocumentTest {
   }
 
   @Test void testEnumsAreIndexed() {
-    DocWithEnum doc1 = DocWithEnum.of(MyJavaEnum.VALUE_1);
-    DocWithEnum doc2 = DocWithEnum.of(MyJavaEnum.VALUE_2);
-    DocWithEnum doc3 = DocWithEnum.of(MyJavaEnum.VALUE_3);
+    DocWithEnum doc1 = DocWithEnum.of(MyJavaEnum.VALUE_1, MyJavaEnum.VALUE_1);
+    DocWithEnum doc2 = DocWithEnum.of(MyJavaEnum.VALUE_2, MyJavaEnum.VALUE_2);
+    DocWithEnum doc3 = DocWithEnum.of(MyJavaEnum.VALUE_3, MyJavaEnum.VALUE_3);
 
     docWithEnumRepository.saveAll(List.of(doc1, doc2, doc3));
 
@@ -605,6 +631,21 @@ class BasicRedisDocumentMappingTest extends AbstractBaseDocumentTest {
         () -> assertThat(onlyVal1).containsExactly(doc1), //
         () -> assertThat(onlyVal2).containsExactly(doc2), //
         () -> assertThat(onlyVal3).containsExactly(doc3)  //
+    );
+  }
+
+  @Test
+  void testUpdateDeepNestedField() {
+    Optional<DeepNest> dn1 = deepNestRepository.findFirstByNameIs("dn-1");
+    assertTrue(dn1.isPresent());
+    deepNestRepository.updateField(dn1.get(), DeepNest$.NEST_LEVEL1_NEST_LEVEL2_NAME, "dos-uno");
+
+    Optional<DeepNest> dn1After = deepNestRepository.findFirstByNameIs("dn-1");
+
+    assertAll( //
+        () -> assertThat(dn1.get().getName()).isNotEqualTo("dos-uno"), //
+        () -> assertTrue(dn1After.isPresent()), //
+        () -> assertEquals("dos-uno", dn1After.get().getNestLevel1().getNestLevel2().getName()) //
     );
   }
 }
